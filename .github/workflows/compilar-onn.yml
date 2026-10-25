@@ -26,7 +26,7 @@ jobs:
           java-version: '17'
 
       - name: Preparar Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Instalar SDK necesario
         run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
