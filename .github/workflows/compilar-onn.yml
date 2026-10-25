@@ -1,7 +1,7 @@
+name: Compilar CleanYourTV Onn 4K - dock 6
 
-name: Compilar CleanYourTV Onn 4K
-
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - name: Descargar CleanYourTV 2.5.0
+      - name: Obtener codigo oficial CleanYourTV v2.5.0
         uses: actions/checkout@v4
         with:
           repository: Gathin23/cleanyourtv
@@ -19,72 +19,113 @@ jobs:
           path: tv
           persist-credentials: false
 
-      - name: Preparar Java
+      - name: Personalizar seis apps sin claves inexistentes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          archivo = Path('tv/launcher/app/src/main/res/values/config.xml')
+          if not archivo.is_file():
+              raise SystemExit('No existe config.xml de CleanYourTV v2.5.0')
+          arbol = ET.parse(archivo)
+          raiz = arbol.getroot()
+          if raiz.tag != 'resources':
+              raise SystemExit('config.xml no es un recurso Android valido')
+
+          def buscar(tipo, nombre):
+              return raiz.find(f"{tipo}[@name='{nombre}']")
+
+          def lista(nombre, valores):
+              nodo = buscar('string-array', nombre)
+              if nodo is None:
+                  raise SystemExit('Configuracion oficial sin lista: ' + nombre)
+              for hijo in list(nodo):
+                  nodo.remove(hijo)
+              for valor in valores:
+                  ET.SubElement(nodo, 'item').text = valor
+
+          def campo(tipo, nombre, valor, obligatorio=False):
+              nodo = buscar(tipo, nombre)
+              if nodo is None:
+                  if obligatorio:
+                      raise SystemExit('Configuracion oficial sin campo: ' + nombre)
+                  print('Omitido (no existe en esta version): ' + nombre)
+                  return
+              nodo.text = str(valor).lower() if isinstance(valor, bool) else str(valor)
+
+          lista('dock_apps', [
+              'com.netflix.ninja',
+              'com.xuper.netxxus',
+              'io.gh.reisxd.tizentube.cobalt',
+              'com.apple.atve.androidtv.appletv',
+              'com.wbd.stream',
+              'com.xuper.wiwyxuper',
+          ])
+          lista('app_labels', [
+              'com.xuper.netxxus=Xuper Hydra',
+              'io.gh.reisxd.tizentube.cobalt=TizenTube',
+              'com.wbd.stream=Max',
+              'com.xuper.wiwyxuper=WiwyXuper',
+          ])
+          # No ocultar aplicaciones: las dos MXL quedan en la cuadricula.
+          lista('hidden_apps', [])
+          campo('integer', 'columns', 6, obligatorio=True)
+          campo('integer', 'rows_below_dock', 1)
+          campo('bool', 'dock_row', True)
+          campo('bool', 'dock_title', True)
+          campo('bool', 'fill_dock', False)
+          campo('bool', 'advanced_effects', False)
+          campo('bool', 'reduced_motion', True)
+          campo('string', 'live_tv_package', '')
+          # No modificar asistentes, Cast, Wi-Fi, apps instaladas ni Home.
+          # No usar dock_glass: no existe en CleanYourTV 2.5.0.
+          ET.indent(arbol, space='  ')
+          arbol.write(archivo, encoding='utf-8', xml_declaration=True)
+          print('Configuracion creada y XML validado: 6 apps de dock')
+          PY
+
+      - name: Preparar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Preparar Android SDK
+      - name: Preparar SDK Android moderno
         uses: android-actions/setup-android@v4
 
-      - name: Instalar SDK necesario
+      - name: Instalar Android SDK 34
+        shell: bash
         run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
 
-      - name: Configurar seis apps del dock
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-          p = Path('tv/launcher/app/src/main/res/values/config.xml')
-          t = ET.parse(p)
-          r = t.getroot()
-          def arr(name, values):
-              e = r.find(f"string-array[@name='{name}']")
-              if e is None: raise RuntimeError('Falta ' + name)
-              for child in list(e): e.remove(child)
-              for value in values: ET.SubElement(e, 'item').text = value
-          def val(tag, name, value):
-              e = r.find(f"{tag}[@name='{name}']")
-              if e is None: raise RuntimeError('Falta ' + name)
-              e.text = str(value).lower() if isinstance(value, bool) else str(value)
-          arr('dock_apps', ['com.netflix.ninja', 'com.xuper.netxxus', 'io.gh.reisxd.tizentube.cobalt', 'com.apple.atve.androidtv.appletv', 'com.wbd.stream', 'com.xuper.wiwyxuper'])
-          arr('hidden_apps', [])
-          arr('app_labels', ['com.xuper.netxxus=Xuper Hydra', 'io.gh.reisxd.tizentube.cobalt=TizenTube', 'com.wbd.stream=Max', 'com.xuper.wiwyxuper=WiwyXuper'])
-          val('integer', 'columns', 6)
-          val('integer', 'rows_below_dock', 1)
-          val('bool', 'dock_row', True)
-          val('bool', 'dock_title', True)
-          val('bool', 'fill_dock', False)
-          val('bool', 'advanced_effects', False)
-          val('bool', 'reduced_motion', True)
-          val('string', 'live_tv_package', '')
-          ET.indent(t, space='  ')
-          t.write(p, encoding='utf-8', xml_declaration=True)
-          print('Configuracion del dock aplicada')
-          PY
-
-      - name: Compilar APK firmado para prueba
+      - name: Compilar APK firmado con llave de prueba
         working-directory: tv/launcher
+        shell: bash
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assembleRelease
 
-      - name: Verificar y preparar descarga
+      - name: Verificar firma, SDK y paquete
+        shell: bash
         run: |
           set -eu
-          APK=tv/launcher/app/build/outputs/apk/release/app-release.apk
+          APK='tv/launcher/app/build/outputs/apk/release/app-release.apk'
           test -s "$APK"
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$APK"
-          cp "$APK" CleanYourTV_Onn4K_PARA_REVISAR.apk
-          sha256sum CleanYourTV_Onn4K_PARA_REVISAR.apk > SHA256.txt
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | grep "^package: name='com.gathin.tvhome'"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | grep "^sdkVersion:'26'"
+          cp "$APK" 'CleanYourTV_Onn_4K_REVISAR.apk'
+          sha256sum 'CleanYourTV_Onn_4K_REVISAR.apk' > SHA256.txt
+          printf '%s\n' 'Base: CleanYourTV v2.5.0' 'Dock: 6 aplicaciones' 'No incluye clima doble de Merida y Telchac Pueblo' 'No instalar antes de revisar el APK' > LEEME.txt
 
-      - name: Publicar artefacto
+      - name: Descargar APK para revision
         uses: actions/upload-artifact@v4
         with:
-          name: CleanYourTV_Onn4K_PARA_REVISAR
+          name: APK_CleanYourTV_Onn4K_REVISAR
           path: |
-            CleanYourTV_Onn4K_PARA_REVISAR.apk
+            CleanYourTV_Onn_4K_REVISAR.apk
             SHA256.txt
+            LEEME.txt
+          if-no-files-found: error
           retention-days: 7
