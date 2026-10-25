@@ -1,85 +1,18 @@
-name: Compilar CleanYourTV para Onn 4K (sin instalar en la TV)
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  crear-apk:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Obtener CleanYourTV oficial v2.5.0
-        uses: actions/checkout@v4
-        with:
-          repository: Gathin23/cleanyourtv
-          ref: v2.5.0
-          path: origen
-          persist-credentials: false
-
-      - name: Comprobar código original
-        shell: bash
-        run: |
-          git -C origen rev-parse HEAD
-          test -f origen/launcher/app/src/main/res/values/config.xml
-          test -f origen/launcher/gradlew
-
-      - name: Personalizar el launcher para mi Onn 4K
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          path = Path('origen/launcher/app/src/main/res/values/config.xml')
-          tree = ET.parse(path)
-          root = tree.getroot()
-          assert root.tag == 'resources', 'No es config.xml de Android'
-          def element(tag, name):
-              obj = root.find(f"{tag}[@name='{name}']")
-              if obj is None:
-                  raise RuntimeError(f'La versión cambió; falta {tag} {name}, deteniendo compilación')
-              return obj
-          def simple(tag, name, value):
-              element(tag, name).text = str(value).lower() if isinstance(value, bool) else str(value)
-          def lista(name, entries):
-              obj = element('string-array', name)
-              for ch in list(obj):
-                  obj.remove(ch)
-              for entry in entries:
-                  ET.SubElement(obj, 'item').text = entry
-          lista('dock_apps', [
-              'com.netflix.ninja',
-              'com.xuper.netxxus',
-              'io.gh.reisxd.tizentube.cobalt',
-              'com.apple.atve.androidtv.appletv',
-              'com.wbd.stream',
-              'com.xuper.wiwyxuper',
-          ])
-          lista('hidden_apps', [])
-          lista('app_labels', [
-              'com.xuper.netxxus=Xuper Hydra',
-              'io.gh.reisxd.tizentube.cobalt=TizenTube',
-              'com.wbd.stream=Max',
-              'com.xuper.wiwyxuper=WiwyXuper',
+n'com.xuper.wiwyxuper=WiwyXuper',
           ])
           simple('integer', 'columns', 6)
           simple('integer', 'rows_below_dock', 1)
           simple('bool', 'fill_dock', False)
           simple('bool', 'dock_row', True)
           simple('bool', 'dock_title', True)
-          simple('bool', 'dock_glass', True)
           simple('bool', 'advanced_effects', False)
           simple('bool', 'reduced_motion', False)
-          simple('bool', 'show_network_pill', True)
           # Una caja HDMI de salida no tiene puertos HDMI de entrada propios.
-          simple('bool', 'show_inputs_pill', False)
           simple('string', 'live_tv_package', '')
           ET.indent(tree, space='    ')
           tree.write(path, encoding='utf-8', xml_declaration=True)
-          print('Configuración aplicada: dock=6, columnas=6, fondo negro nativo, sin efectos avanzados')
-          print('Los paquetes de TV y la configuración de Android NO se modifican en esta compilación.')
+          print('Configuración aplicada: dock=6, columnas=6, fondo oscuro original, efectos avanzados desactivados')
+          print('No se modifican paquetes instalados ni ajustes de la TV; solo el APK en GitHub.')
           PY
 
       - name: Configurar Java 17
@@ -94,3 +27,39 @@ jobs:
       - name: Instalar SDK mínimo del build
         shell: bash
         run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Compilar APK release firmado para pruebas (solo en GitHub)
+        shell: bash
+        working-directory: origen/launcher
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Comprobar integridad del APK generado
+        shell: bash
+        run: |
+          set -eu
+          APK=origen/launcher/app/build/outputs/apk/release/app-release.apk
+          test -s "$APK"
+          unzip -t "$APK" | tail -1
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | grep "^package: name='com.gathin.tvhome'"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | grep "^sdkVersion:'26'"
+          sha256sum "$APK" | tee SHA256_APK.txt
+          echo "CleanYourTV upstream v2.5.0, personalizado para sti6140d360" > INFORME.txt
+          echo "No incluye el clima doble (pendiente de implementación)." >> INFORME.txt
+          echo "No se ha instalado en ningún dispositivo." >> INFORME.txt
+          cp "$APK" CleanYourTV_Onn_4K_Prueba.apk
+
+      - name: Entregar APK e integridad para revisión
+        uses: actions/upload-artifact@v4
+        with:
+          name: APK-CleanYourTV-Onn4K-REVISAR-ANTES-DE-INSTALAR
+          path: |
+            CleanYourTV_Onn_4K_Prueba.apk
+            SHA256_APK.txt
+            INFORME.txt
+          if-no-files-found: error
+          retention-days: 7
