@@ -1,4 +1,4 @@
-name: Compilar CleanYourTV Onn 4K - dock 6
+name: CleanYourTV 2.7.0 Onn 4K - dock 6 - prueba
 
 on:
   workflow_dispatch:
@@ -11,121 +11,86 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - name: Obtener codigo oficial CleanYourTV v2.5.0
+      - name: Obtener archivos del repositorio
         uses: actions/checkout@v4
-        with:
-          repository: Gathin23/cleanyourtv
-          ref: v2.5.0
-          path: tv
-          persist-credentials: false
 
-      - name: Personalizar seis apps sin claves inexistentes
+      - name: Comprobar el ZIP personalizado y extraer fuente
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-
-          archivo = Path('tv/launcher/app/src/main/res/values/config.xml')
-          if not archivo.is_file():
-              raise SystemExit('No existe config.xml de CleanYourTV v2.5.0')
-          arbol = ET.parse(archivo)
-          raiz = arbol.getroot()
-          if raiz.tag != 'resources':
-              raise SystemExit('config.xml no es un recurso Android valido')
-
-          def buscar(tipo, nombre):
-              return raiz.find(f"{tipo}[@name='{nombre}']")
-
-          def lista(nombre, valores):
-              nodo = buscar('string-array', nombre)
-              if nodo is None:
-                  raise SystemExit('Configuracion oficial sin lista: ' + nombre)
-              for hijo in list(nodo):
-                  nodo.remove(hijo)
-              for valor in valores:
-                  ET.SubElement(nodo, 'item').text = valor
-
-          def campo(tipo, nombre, valor, obligatorio=False):
-              nodo = buscar(tipo, nombre)
-              if nodo is None:
-                  if obligatorio:
-                      raise SystemExit('Configuracion oficial sin campo: ' + nombre)
-                  print('Omitido (no existe en esta version): ' + nombre)
-                  return
-              nodo.text = str(valor).lower() if isinstance(valor, bool) else str(valor)
-
-          lista('dock_apps', [
-              'com.netflix.ninja',
-              'com.xuper.netxxus',
-              'io.gh.reisxd.tizentube.cobalt',
-              'com.apple.atve.androidtv.appletv',
-              'com.wbd.stream',
-              'com.xuper.wiwyxuper',
-          ])
-          lista('app_labels', [
-              'com.xuper.netxxus=Xuper Hydra',
-              'io.gh.reisxd.tizentube.cobalt=TizenTube',
-              'com.wbd.stream=Max',
-              'com.xuper.wiwyxuper=WiwyXuper',
-          ])
-          # No ocultar aplicaciones: las dos MXL quedan en la cuadricula.
-          lista('hidden_apps', [])
-          campo('integer', 'columns', 6, obligatorio=True)
-          campo('integer', 'rows_below_dock', 1)
-          campo('bool', 'dock_row', True)
-          campo('bool', 'dock_title', True)
-          campo('bool', 'fill_dock', False)
-          campo('bool', 'advanced_effects', False)
-          campo('bool', 'reduced_motion', True)
-          campo('string', 'live_tv_package', '')
-          # No modificar asistentes, Cast, Wi-Fi, apps instaladas ni Home.
-          # No usar dock_glass: no existe en CleanYourTV 2.5.0.
-          ET.indent(arbol, space='  ')
-          arbol.write(archivo, encoding='utf-8', xml_declaration=True)
-          print('Configuracion creada y XML validado: 6 apps de dock')
-          PY
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib, pathlib, zipfile
+          p = pathlib.Path('cleanyourtv-2.7.0-ONN-DOCK6.zip')
+          if not p.is_file():
+              raise SystemExit('Falta el ZIP en la raiz del repositorio.')
+          digest = hashlib.sha256(p.read_bytes()).hexdigest()
+          expected = '2751c209ba35ce274d72ddb03db38f0962c1d177621522dcf5221a6e03a9a15d'
+          if digest != expected:
+              raise SystemExit('El ZIP no coincide con la fuente verificada. SHA256=' + digest)
+          with zipfile.ZipFile(p) as archive:
+              if archive.testzip() is not None:
+                  raise SystemExit('ZIP corrupto.')
+              for item in archive.infolist():
+                  path = pathlib.PurePosixPath(item.filename)
+                  if path.is_absolute() or '..' in path.parts or path.parts[0] != 'cleanyourtv-2.7.0':
+                      raise SystemExit('Ruta inesperada dentro del ZIP: ' + item.filename)
+              archive.extractall('.')
+          print('Fuente 2.7.0 autenticada por SHA256 y extraida.')
+          PYCODE
 
       - name: Preparar Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Preparar SDK Android moderno
+      - name: Preparar SDK Android
         uses: android-actions/setup-android@v4
 
-      - name: Instalar Android SDK 34
-        shell: bash
-        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
-
-      - name: Compilar APK firmado con llave de prueba
-        working-directory: tv/launcher
+      - name: Instalar plataforma Android 34
         shell: bash
         run: |
+          set -euo pipefail
+          sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+
+      - name: Compilar 2.7 como aplicacion paralela sin reemplazar 2.5
+        working-directory: cleanyourtv-2.7.0/launcher
+        shell: bash
+        run: |
+          set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleRelease
+          ./gradlew --no-daemon --stacktrace --console=plain \
+            -PlauncherApplicationId=com.gathin.tvhome.v27 assembleRelease
 
-      - name: Verificar firma, SDK y paquete
+      - name: Verificar firma, version y paquete
         shell: bash
         run: |
-          set -eu
-          APK='tv/launcher/app/build/outputs/apk/release/app-release.apk'
+          set -euo pipefail
+          mkdir -p salida
+          APK=cleanyourtv-2.7.0/launcher/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$APK"
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | grep "^package: name='com.gathin.tvhome'"
-          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$APK" | grep "^sdkVersion:'26'"
-          cp "$APK" 'CleanYourTV_Onn_4K_REVISAR.apk'
-          sha256sum 'CleanYourTV_Onn_4K_REVISAR.apk' > SHA256.txt
-          printf '%s\n' 'Base: CleanYourTV v2.5.0' 'Dock: 6 aplicaciones' 'No incluye clima doble de Merida y Telchac Pueblo' 'No instalar antes de revisar el APK' > LEEME.txt
+          AAPT="$ANDROID_HOME/build-tools/34.0.0/aapt"
+          SIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          "$SIGNER" verify --verbose --print-certs "$APK" > salida/FIRMA.txt
+          "$AAPT" dump badging "$APK" > salida/MANIFIESTO.txt
+          grep -q "package: name='com.gathin.tvhome.v27'" salida/MANIFIESTO.txt
+          grep -q "sdkVersion:'26'" salida/MANIFIESTO.txt
+          grep -q "versionName='2.7'" salida/MANIFIESTO.txt
+          cp "$APK" salida/CleanYourTV_2.7_ONN_DOCK6_PRUEBA.apk
+          (cd salida && sha256sum CleanYourTV_2.7_ONN_DOCK6_PRUEBA.apk > SHA256.txt)
+          printf '%s\n' \
+            '2.7.0 - prueba paralela' \
+            'Paquete: com.gathin.tvhome.v27' \
+            'No reemplaza com.gathin.tvhome (CleanYourTV 2.5).' \
+            'No modifica el lanzador HOME de la TV.' \
+            'Dock: Netflix, Xuper Hydra, TizenTube, Apple TV, Max, WiwyXuper.' \
+            'Firma de prueba: la clave privada no se entrega. Futuras actualizaciones requeriran firma estable.' \
+            > salida/LEEME.txt
 
-      - name: Descargar APK para revision
+      - name: Publicar APK para revision (sin instalar en TV)
         uses: actions/upload-artifact@v4
         with:
-          name: APK_CleanYourTV_Onn4K_REVISAR
-          path: |
-            CleanYourTV_Onn_4K_REVISAR.apk
-            SHA256.txt
-            LEEME.txt
+          name: CleanYourTV_2_7_ONN_DOCK6_PRUEBA
+          path: salida/
+          retention-days: 14
           if-no-files-found: error
-          retention-days: 7
